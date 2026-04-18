@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Claude Log
+Comment=Browse Claude Code conversation history
+Exec=python3 /home/hplaptopjoseph/claude_log/main.py
+Icon=claude_log
+Terminal=false
+Categories=Utility;Development;
+StartupNotify=true
+StartupWMClass=claude_log
