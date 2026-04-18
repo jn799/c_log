@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime, timezone
 
 _CONFIG_DIR = os.path.expanduser("~/.config/claude_log")
 _PROJECTS_FILE = os.path.join(_CONFIG_DIR, "projects.json")
@@ -69,3 +70,66 @@ def cache_title(uuid: str, title: str) -> None:
 
 def get_cached_title(uuid: str) -> str | None:
     return load_titles().get(uuid)
+
+
+_PINNED_FILE = os.path.join(_CONFIG_DIR, "pinned.json")
+
+
+def set_last_accessed(path: str) -> None:
+    projects = load_projects()
+    ts = datetime.now(timezone.utc).isoformat()
+    for p in projects:
+        if p["path"] == path:
+            p["last_accessed"] = ts
+            break
+    save_projects(projects)
+
+
+def get_last_accessed(path: str) -> str:
+    for p in load_projects():
+        if p["path"] == path:
+            return p.get("last_accessed", "")
+    return ""
+
+
+def load_pinned() -> set:
+    try:
+        with open(_PINNED_FILE) as f:
+            return set(json.load(f).get("pinned", []))
+    except (OSError, json.JSONDecodeError):
+        return set()
+
+
+def save_pinned(pinned: set) -> None:
+    _ensure_dir()
+    with open(_PINNED_FILE, "w") as f:
+        json.dump({"pinned": list(pinned)}, f, indent=2)
+
+
+def pin_session(uuid: str) -> None:
+    pinned = load_pinned()
+    pinned.add(uuid)
+    save_pinned(pinned)
+
+
+def unpin_session(uuid: str) -> None:
+    pinned = load_pinned()
+    pinned.discard(uuid)
+    save_pinned(pinned)
+
+
+def is_pinned(uuid: str) -> bool:
+    return uuid in load_pinned()
+
+
+def clear_project_titles(project_path: str) -> None:
+    """Remove all cached titles for sessions in the given project directory."""
+    titles = load_titles()
+    if os.path.isdir(project_path):
+        uuids = {
+            os.path.splitext(f)[0]
+            for f in os.listdir(project_path)
+            if f.endswith(".jsonl")
+        }
+        updated = {k: v for k, v in titles.items() if k not in uuids}
+        save_titles(updated)

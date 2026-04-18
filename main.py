@@ -13,8 +13,8 @@ from ui.stylesheet import QSS
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("Claude Log")
-    app.setOrganizationName("claude_log")
+    app.setApplicationName("CLog")
+    app.setOrganizationName("clog")
 
     icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
     if os.path.exists(icon_path):

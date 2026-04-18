@@ -1,3 +1,5 @@
+import json
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QScrollArea, QFrame, QTextEdit, QSizePolicy, QPushButton
@@ -40,10 +42,39 @@ class _AutoTextEdit(QTextEdit):
         return QSize(super().sizeHint().width(), h)
 
 
-class ToolCallBadge(QLabel):
-    def __init__(self, name: str, parent=None):
-        super().__init__(f"  ⚙ {name}  ", parent)
+class _ToolBadge(QPushButton):
+    """Checkable badge button that toggles its paired detail panel."""
+
+    def __init__(self, name: str, detail: QFrame, parent=None):
+        super().__init__(f"⚙ {name}", parent)
         self.setObjectName("ToolCallBadge")
+        self.setCheckable(True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._detail = detail
+        self.toggled.connect(detail.setVisible)
+
+
+def _make_tool_detail(tc: dict) -> QFrame:
+    detail = QFrame()
+    detail.setObjectName("ToolDetail")
+    detail.hide()
+    lay = QVBoxLayout(detail)
+    lay.setContentsMargins(8, 4, 8, 4)
+    lay.setSpacing(0)
+
+    inp = tc.get("input")
+    if inp:
+        text = json.dumps(inp, indent=2, ensure_ascii=False)
+        edit = QTextEdit()
+        edit.setObjectName("ToolDetailInput")
+        edit.setReadOnly(True)
+        edit.setPlainText(text)
+        edit.setMaximumHeight(160)
+        edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        lay.addWidget(edit)
+    else:
+        lay.addWidget(QLabel("(no input)"))
+    return detail
 
 
 class MessageBubble(QFrame):
@@ -88,6 +119,11 @@ class MessageBubble(QFrame):
             mod.setObjectName("ModelChip")
             header.addWidget(mod)
 
+        if msg.get("effort"):
+            eff = QLabel(f"effort: {msg['effort']}")
+            eff.setObjectName("EffortChip")
+            header.addWidget(eff)
+
         layout.addLayout(header)
 
         sep = QFrame()
@@ -95,16 +131,28 @@ class MessageBubble(QFrame):
         sep.setFrameShape(QFrame.Shape.HLine)
         layout.addWidget(sep)
 
-        # ── Tool calls ──
+        # ── Tool calls — each badge toggles its own detail panel ──
         if msg.get("tool_calls"):
+            tool_calls = msg["tool_calls"]
             tool_row = QHBoxLayout()
             tool_row.setSpacing(6)
-            for tc in msg["tool_calls"][:6]:
-                tool_row.addWidget(ToolCallBadge(tc["name"]))
-            if len(msg["tool_calls"]) > 6:
-                tool_row.addWidget(QLabel(f"+{len(msg['tool_calls'])-6} more"))
+            detail_panels = []
+
+            for tc in tool_calls[:6]:
+                detail = _make_tool_detail(tc)
+                badge = _ToolBadge(tc["name"], detail)
+                tool_row.addWidget(badge)
+                detail_panels.append(detail)
+
+            if len(tool_calls) > 6:
+                more = QLabel(f"+{len(tool_calls)-6} more")
+                more.setObjectName("SessionMeta")
+                tool_row.addWidget(more)
+
             tool_row.addStretch()
             layout.addLayout(tool_row)
+            for panel in detail_panels:
+                layout.addWidget(panel)
 
         # ── Body ──
         text = msg.get("text", "")
@@ -133,7 +181,7 @@ class LogWindow(QWidget):
     def __init__(self, session_meta: dict, parent=None):
         super().__init__(parent)
         title = session_meta.get("title", "Session")
-        self.setWindowTitle(f"Claude Log — {title[:55]}")
+        self.setWindowTitle(f"CLog — {title[:55]}")
         self.resize(900, 700)
         self.setObjectName("LogWindow")
 
@@ -154,8 +202,6 @@ class LogWindow(QWidget):
             return lbl
 
         hlay.addWidget(chip(session_meta.get("display_path", ""), "HeaderProject"))
-        hlay.addWidget(chip("│", "HeaderSep"))
-        hlay.addWidget(chip(session_meta.get("model", ""), "HeaderModel"))
         hlay.addWidget(chip("│", "HeaderSep"))
         hlay.addWidget(chip(session_meta.get("date", ""), "HeaderDate"))
         if session_meta.get("version"):
@@ -188,7 +234,17 @@ class LogWindow(QWidget):
             if msg["is_tool_exchange"]:
                 vbox.addWidget(ToolExchangeSep())
             else:
-                vbox.addWidget(MessageBubble(msg))
+                bubble = MessageBubble(msg)
+                wrapper = QHBoxLayout()
+                wrapper.setSpacing(0)
+                wrapper.setContentsMargins(0, 0, 0, 0)
+                if msg["role"] == "user":
+                    wrapper.addStretch(1)
+                    wrapper.addWidget(bubble, 4)
+                else:
+                    wrapper.addWidget(bubble, 4)
+                    wrapper.addStretch(1)
+                vbox.addLayout(wrapper)
 
         if not messages:
             empty = QLabel("No messages found.")

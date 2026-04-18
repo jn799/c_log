@@ -85,11 +85,19 @@ def _is_tool_result_only(content) -> bool:
 
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _fmt_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M tok"
+    if n >= 1_000:
+        return f"{n/1_000:.1f}k tok"
+    return f"{n} tok"
+
+
 def parse_session_metadata(path: str) -> dict | None:
     """
     Fast scan: returns a dict with keys:
         uuid, title, custom_title, first_ts, last_ts, model, version,
-        cwd, display_path, msg_count
+        cwd, display_path, msg_count, total_tokens
     Returns None if the file is empty or unparseable.
     title    — first human user message (fallback)
     custom_title — value from Claude Code's custom-title event (may be "")
@@ -100,6 +108,7 @@ def parse_session_metadata(path: str) -> dict | None:
     first_ts = last_ts = ""
     model = version = cwd = ""
     msg_count = 0
+    total_tokens = 0
 
     try:
         for raw in open(path):
@@ -137,6 +146,8 @@ def parse_session_metadata(path: str) -> dict | None:
                 )
                 if has_text:
                     msg_count += 1
+                usage = ev.get("message", {}).get("usage", {})
+                total_tokens += (usage.get("output_tokens") or 0)
                 if not model:
                     model = ev.get("message", {}).get("model", "")
                 last_ts = ev.get("timestamp", last_ts)
@@ -164,6 +175,8 @@ def parse_session_metadata(path: str) -> dict | None:
         "cwd": cwd,
         "display_path": _display_path(cwd),
         "msg_count": f"{msg_count} message{'s' if msg_count != 1 else ''}",
+        "total_tokens": total_tokens,
+        "total_tokens_fmt": _fmt_tokens(total_tokens) if total_tokens else "",
     }
 
 
@@ -182,10 +195,20 @@ def _normalize_model(raw: str) -> str:
 
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _extract_effort(content) -> str | None:
+    """Extract effort level from a /effort command user message, or None."""
+    text = content if isinstance(content, str) else _extract_user_text(content)
+    if "<command-name>/effort</command-name>" not in text:
+        return None
+    import re
+    m = re.search(r"<command-args>(.*?)</command-args>", text)
+    return m.group(1).strip().lower() if m else None
+
+
 def parse_session_messages(path: str) -> list[dict]:
     """
     Full parse. Returns a list of message dicts:
-        role, timestamp, text, tool_calls, thinking, output_tokens, model, is_tool_exchange
+        role, timestamp, text, tool_calls, thinking, output_tokens, model, effort, is_tool_exchange
     Consecutive thinking+response assistant events are merged into one.
     """
     events = []
@@ -205,6 +228,7 @@ def parse_session_messages(path: str) -> list[dict]:
 
     messages = []
     pending_thinking = False
+    current_effort: str | None = None
 
     for ev in events:
         t = ev.get("type")
@@ -214,6 +238,9 @@ def parse_session_messages(path: str) -> list[dict]:
         if t == "user":
             pending_thinking = False
             content = ev.get("message", {}).get("content", "")
+            effort = _extract_effort(content)
+            if effort is not None:
+                current_effort = effort
             is_tool = _is_tool_result_only(content)
             text = "" if is_tool else _extract_user_text(content)
             # Skip system-injected messages that aren't real human input
@@ -227,6 +254,7 @@ def parse_session_messages(path: str) -> list[dict]:
                 "thinking": False,
                 "output_tokens": None,
                 "model": None,
+                "effort": None,
                 "version": version,
                 "is_tool_exchange": is_tool,
             })
@@ -263,6 +291,7 @@ def parse_session_messages(path: str) -> list[dict]:
                 "thinking": pending_thinking,
                 "output_tokens": usage.get("output_tokens"),
                 "model": _normalize_model(ev.get("message", {}).get("model", "")),
+                "effort": current_effort,
                 "version": version,
                 "is_tool_exchange": False,
             })

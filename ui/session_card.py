@@ -1,14 +1,15 @@
 from PyQt6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QStackedWidget
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QStackedWidget, QToolButton, QMenu, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeyEvent
 
-from core import config
+from core import config, jsonl_parser
+from ui.report_dialog import ReportDialog
 
 
 def _resolve_title(meta: dict) -> str:
-    """Priority: user rename → custom-title from JSONL → first message."""
     cached = config.get_cached_title(meta["uuid"])
     if cached:
         return cached
@@ -18,7 +19,6 @@ def _resolve_title(meta: dict) -> str:
 
 
 class _TitleEdit(QLineEdit):
-    """Inline title editor — commits on Enter, cancels on Escape."""
     commit = pyqtSignal(str)
     cancel = pyqtSignal()
 
@@ -36,21 +36,34 @@ class _TitleEdit(QLineEdit):
 
 
 class SessionCard(QFrame):
-    clicked = pyqtSignal(dict)   # emits full session metadata dict
-    renamed = pyqtSignal(str)    # emits new title
+    clicked = pyqtSignal(dict)
+    renamed = pyqtSignal(str)
+    updated = pyqtSignal(dict)
+    pin_changed = pyqtSignal()
 
     def __init__(self, session_meta: dict, parent=None):
         super().__init__(parent)
-        self.session_meta = session_meta
+        self.session_meta = dict(session_meta)
         self._editing = False
+        self._pinned = config.is_pinned(session_meta["uuid"])
         self.setObjectName("SessionCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(68)
+        self.setProperty("pinned", "true" if self._pinned else "false")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(4)
 
-        # ── Title row (label ↔ edit field via QStackedWidget) ──
+        # ── Title row: pin icon + stacked label/edit + 3-dot menu ──
+        title_row = QHBoxLayout()
+        title_row.setSpacing(6)
+
+        self._pin_icon = QLabel("⊛")
+        self._pin_icon.setObjectName("PinIcon")
+        self._pin_icon.setVisible(self._pinned)
+        title_row.addWidget(self._pin_icon)
+
         self._stack = QStackedWidget()
         self._stack.setFixedHeight(20)
 
@@ -63,43 +76,59 @@ class SessionCard(QFrame):
         self._title_edit.commit.connect(self._commit_rename)
         self._title_edit.cancel.connect(self._cancel_rename)
 
-        self._stack.addWidget(self._title_label)   # index 0
-        self._stack.addWidget(self._title_edit)    # index 1
+        self._stack.addWidget(self._title_label)
+        self._stack.addWidget(self._title_edit)
         self._stack.setCurrentIndex(0)
+        title_row.addWidget(self._stack, 1)
 
-        layout.addWidget(self._stack)
+        self._menu_btn = QToolButton()
+        self._menu_btn.setText("⋯")
+        self._menu_btn.setObjectName("CardMenuBtn")
+        self._menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._menu_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        self._menu = QMenu(self._menu_btn)
+        self._menu.setObjectName("CardMenu")
+        self._menu.addAction("Rename").triggered.connect(self._start_rename)
+        self._menu.addAction("Update").triggered.connect(self._do_update)
+        self._pin_action = self._menu.addAction("Unpin" if self._pinned else "Pin")
+        self._pin_action.triggered.connect(self._toggle_pin)
+        self._menu_btn.setMenu(self._menu)
+        title_row.addWidget(self._menu_btn)
+
+        layout.addLayout(title_row)
 
         # ── Meta row ──
         meta_row = QHBoxLayout()
         meta_row.setSpacing(8)
 
-        date_lbl = QLabel(session_meta.get("date", ""))
-        date_lbl.setObjectName("SessionMeta")
+        self._date_lbl = QLabel(session_meta.get("date", ""))
+        self._date_lbl.setObjectName("SessionMeta")
+        self._count_lbl = QLabel(session_meta.get("msg_count", ""))
+        self._count_lbl.setObjectName("SessionMeta")
+        self._tok_dot = QLabel("·")
+        self._tok_dot.setObjectName("SessionMeta")
+        self._tok_lbl = QLabel(session_meta.get("total_tokens_fmt", ""))
+        self._tok_lbl.setObjectName("SessionMeta")
 
         dot = QLabel("·")
         dot.setObjectName("SessionMeta")
 
-        count_lbl = QLabel(session_meta.get("msg_count", ""))
-        count_lbl.setObjectName("SessionMeta")
-
-        hint = QLabel("double-click to rename")
-        hint.setObjectName("RenameHint")
-
-        meta_row.addWidget(date_lbl)
+        meta_row.addWidget(self._date_lbl)
         meta_row.addWidget(dot)
-        meta_row.addWidget(count_lbl)
+        meta_row.addWidget(self._count_lbl)
+        meta_row.addWidget(self._tok_dot)
+        meta_row.addWidget(self._tok_lbl)
         meta_row.addStretch()
-        meta_row.addWidget(hint)
 
-        model = session_meta.get("model", "")
-        if model:
-            model_lbl = QLabel(model)
-            model_lbl.setObjectName("SessionModel")
-            meta_row.addWidget(model_lbl)
+        if not session_meta.get("total_tokens_fmt"):
+            self._tok_dot.hide()
+            self._tok_lbl.hide()
 
         layout.addLayout(meta_row)
 
-    # ── Rename logic ──────────────────────────────────────────────────────────
+    # ── Rename ────────────────────────────────────────────────────────────────
 
     def _start_rename(self):
         self._editing = True
@@ -119,11 +148,62 @@ class SessionCard(QFrame):
         self._editing = False
         self._stack.setCurrentIndex(0)
 
-    # ── Events ───────────────────────────────────────────────────────────────
+    # ── Update ────────────────────────────────────────────────────────────────
 
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._start_rename()
+    def _do_update(self):
+        new_meta = jsonl_parser.parse_session_metadata(self.session_meta["path"])
+        if new_meta is None:
+            QMessageBox.warning(self, "Update", "Could not read session file.")
+            return
+
+        old_tokens = self.session_meta.get("total_tokens", 0)
+        old_count = self.session_meta.get("msg_count", "")
+        new_tokens = new_meta.get("total_tokens", 0)
+        new_count = new_meta.get("msg_count", "")
+
+        if old_tokens == new_tokens and old_count == new_count:
+            ReportDialog.show("Session Update", "This session is already up-to-date!", self)
+            return
+
+        self.session_meta = new_meta
+        self._count_lbl.setText(new_count)
+        tok_fmt = new_meta.get("total_tokens_fmt", "")
+        self._tok_lbl.setText(tok_fmt)
+        if tok_fmt:
+            self._tok_dot.show()
+            self._tok_lbl.show()
+        else:
+            self._tok_dot.hide()
+            self._tok_lbl.hide()
+
+        changes = []
+        if old_count != new_count:
+            changes.append(f"Messages:  {old_count}  →  {new_count}")
+        if old_tokens != new_tokens:
+            old_fmt = jsonl_parser._fmt_tokens(old_tokens) if old_tokens else "0"
+            new_fmt = new_meta.get("total_tokens_fmt") or "0"
+            changes.append(f"Tokens:  {old_fmt}  →  {new_fmt}")
+        ReportDialog.show("Session Update", "Updated:\n\n• " + "\n• ".join(changes), self)
+        self.updated.emit(new_meta)
+
+    # ── Pin ───────────────────────────────────────────────────────────────────
+
+    def _toggle_pin(self):
+        uuid = self.session_meta["uuid"]
+        if self._pinned:
+            config.unpin_session(uuid)
+            self._pinned = False
+        else:
+            config.pin_session(uuid)
+            self._pinned = True
+        self._pin_icon.setVisible(self._pinned)
+        self._pin_action.setText("Unpin" if self._pinned else "Pin")
+        self.setProperty("pinned", "true" if self._pinned else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.pin_changed.emit()
+
+    # ── Events ────────────────────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and not self._editing:
