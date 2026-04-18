@@ -3,11 +3,12 @@ from PyQt6.QtCore import Qt, pyqtSignal
 
 
 class ProjectCard(QFrame):
-    clicked = pyqtSignal(str)
+    clicked = pyqtSignal(str)  # emits project_path
 
-    def __init__(self, name: str, session_count: int, parent=None):
+    def __init__(self, name: str, session_count: int, path: str, parent=None):
         super().__init__(parent)
         self.project_name = name
+        self.project_path = path
         self.setObjectName("ProjectCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -35,7 +36,7 @@ class ProjectCard(QFrame):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit(self.project_name)
+            self.clicked.emit(self.project_path)
         super().mousePressEvent(event)
 
     def enterEvent(self, event):

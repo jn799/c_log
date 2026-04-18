@@ -1,63 +1,92 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QScrollArea, QFrame, QSizePolicy
+    QScrollArea, QFrame, QTextEdit, QSizePolicy, QPushButton
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QTextOption
 
-LOREM = (
-    "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod "
-    "tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, "
-    "quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.\n\n"
-    "Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu "
-    "fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in "
-    "culpa qui officia deserunt mollit anim id est laborum."
-)
+from core.jsonl_parser import parse_session_messages
 
-DUMMY_MESSAGES = [
-    ("user",      "2026-04-15 14:23:01", None,       None,  "Fix the authentication bug in the payment flow. When users try to checkout with a saved card, the JWT token expires mid-flow and they get a 401."),
-    ("assistant", "2026-04-15 14:23:18", 1842, 12.4, LOREM),
-    ("user",      "2026-04-15 14:25:03", None,       None,  "Can you also add a token refresh interceptor to the axios client?"),
-    ("assistant", "2026-04-15 14:25:31", 2109, 18.7, LOREM + "\n\n" + LOREM),
-    ("user",      "2026-04-15 14:28:45", None,       None,  "Looks good. Let's also write a test for the refresh logic."),
-    ("assistant", "2026-04-15 14:29:02", 987,   8.1, LOREM),
-]
+
+class _AutoTextEdit(QTextEdit):
+    """Read-only QTextEdit that expands to its full document height."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setObjectName("MessageBodyEdit")
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.document().contentsChanged.connect(self._fit)
+
+    def _fit(self):
+        vw = self.viewport().width()
+        if vw > 0:
+            self.document().setTextWidth(vw)
+        h = max(20, int(self.document().size().height()) + 10)
+        self.setFixedHeight(h)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit()
+
+    def sizeHint(self):
+        vw = self.viewport().width()
+        if vw > 0:
+            self.document().setTextWidth(vw)
+        h = max(20, int(self.document().size().height()) + 10)
+        return QSize(super().sizeHint().width(), h)
+
+
+class ToolCallBadge(QLabel):
+    def __init__(self, name: str, parent=None):
+        super().__init__(f"  ⚙ {name}  ", parent)
+        self.setObjectName("ToolCallBadge")
 
 
 class MessageBubble(QFrame):
-    def __init__(self, role, timestamp, tokens, thinking_s, content, parent=None):
+    def __init__(self, msg: dict, parent=None):
         super().__init__(parent)
         self.setObjectName("MessageBubble")
+        role = msg["role"]
         self.setProperty("role", role)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(4)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(6)
 
-        # Header row
+        # ── Header row ──
         header = QHBoxLayout()
-        header.setSpacing(10)
+        header.setSpacing(8)
 
         role_label = QLabel("USER" if role == "user" else "ASSISTANT")
         role_label.setObjectName("RoleLabel")
         role_label.setProperty("role", role)
 
-        ts_label = QLabel(timestamp)
+        ts_label = QLabel(msg["timestamp"])
         ts_label.setObjectName("TimestampLabel")
 
         header.addWidget(role_label)
+
+        if msg.get("thinking"):
+            think_badge = QLabel("⏱ thinking")
+            think_badge.setObjectName("ThinkingBadge")
+            header.addWidget(think_badge)
+
         header.addWidget(ts_label)
         header.addStretch()
 
-        if tokens is not None:
-            meta = QLabel(f"{tokens:,} tokens")
-            meta.setObjectName("MetaLabel")
-            header.addWidget(meta)
+        if msg.get("output_tokens"):
+            tok = QLabel(f"{msg['output_tokens']:,} tok")
+            tok.setObjectName("MetaLabel")
+            header.addWidget(tok)
 
-        if thinking_s is not None:
-            think = QLabel(f"⏱ {thinking_s:.1f}s")
-            think.setObjectName("MetaLabel")
-            header.addWidget(think)
+        if msg.get("model"):
+            mod = QLabel(msg["model"])
+            mod.setObjectName("ModelChip")
+            header.addWidget(mod)
 
         layout.addLayout(header)
 
@@ -66,18 +95,46 @@ class MessageBubble(QFrame):
         sep.setFrameShape(QFrame.Shape.HLine)
         layout.addWidget(sep)
 
-        body = QLabel(content)
-        body.setObjectName("MessageBody")
-        body.setWordWrap(True)
-        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(body)
+        # ── Tool calls ──
+        if msg.get("tool_calls"):
+            tool_row = QHBoxLayout()
+            tool_row.setSpacing(6)
+            for tc in msg["tool_calls"][:6]:
+                tool_row.addWidget(ToolCallBadge(tc["name"]))
+            if len(msg["tool_calls"]) > 6:
+                tool_row.addWidget(QLabel(f"+{len(msg['tool_calls'])-6} more"))
+            tool_row.addStretch()
+            layout.addLayout(tool_row)
+
+        # ── Body ──
+        text = msg.get("text", "")
+        if text:
+            body = _AutoTextEdit()
+            if role == "assistant":
+                body.setMarkdown(text)
+            else:
+                body.setPlainText(text)
+            layout.addWidget(body)
+
+
+class ToolExchangeSep(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ToolExchangeSep")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lbl = QLabel("↩ tool results")
+        lbl.setObjectName("ToolExchangeLabel")
+        lay.addWidget(lbl)
+        lay.addStretch()
 
 
 class LogWindow(QWidget):
-    def __init__(self, title, project, model, session_date, parent=None):
+    def __init__(self, session_meta: dict, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Claude Log — {title[:60]}")
-        self.resize(860, 680)
+        title = session_meta.get("title", "Session")
+        self.setWindowTitle(f"Claude Log — {title[:55]}")
+        self.resize(900, 700)
         self.setObjectName("LogWindow")
 
         root = QVBoxLayout(self)
@@ -89,31 +146,32 @@ class LogWindow(QWidget):
         header.setObjectName("LogHeader")
         hlay = QHBoxLayout(header)
         hlay.setContentsMargins(16, 10, 16, 10)
-        hlay.setSpacing(16)
+        hlay.setSpacing(14)
 
         def chip(text, name):
             lbl = QLabel(text)
             lbl.setObjectName(name)
             return lbl
 
-        hlay.addWidget(chip(project, "HeaderProject"))
+        hlay.addWidget(chip(session_meta.get("display_path", ""), "HeaderProject"))
         hlay.addWidget(chip("│", "HeaderSep"))
-        hlay.addWidget(chip(model, "HeaderModel"))
+        hlay.addWidget(chip(session_meta.get("model", ""), "HeaderModel"))
         hlay.addWidget(chip("│", "HeaderSep"))
-        hlay.addWidget(chip(session_date, "HeaderDate"))
+        hlay.addWidget(chip(session_meta.get("date", ""), "HeaderDate"))
+        if session_meta.get("version"):
+            hlay.addWidget(chip("│", "HeaderSep"))
+            hlay.addWidget(chip(f"v{session_meta['version']}", "HeaderDate"))
         hlay.addStretch()
-        msg_count = QLabel(f"{len(DUMMY_MESSAGES)} messages")
-        msg_count.setObjectName("HeaderMeta")
-        hlay.addWidget(msg_count)
+        hlay.addWidget(chip(session_meta.get("msg_count", ""), "HeaderMeta"))
 
         root.addWidget(header)
 
-        divider = QFrame()
-        divider.setObjectName("HeaderDivider")
-        divider.setFrameShape(QFrame.Shape.HLine)
-        root.addWidget(divider)
+        div = QFrame()
+        div.setObjectName("HeaderDivider")
+        div.setFrameShape(QFrame.Shape.HLine)
+        root.addWidget(div)
 
-        # ── Scroll area ──
+        # ── Scroll area with messages ──
         scroll = QScrollArea()
         scroll.setObjectName("LogScroll")
         scroll.setWidgetResizable(True)
@@ -123,11 +181,20 @@ class LogWindow(QWidget):
         container.setObjectName("LogContainer")
         vbox = QVBoxLayout(container)
         vbox.setContentsMargins(16, 16, 16, 16)
-        vbox.setSpacing(8)
+        vbox.setSpacing(6)
 
-        for role, ts, tokens, thinking_s, content in DUMMY_MESSAGES:
-            bubble = MessageBubble(role, ts, tokens, thinking_s, content)
-            vbox.addWidget(bubble)
+        messages = parse_session_messages(session_meta["path"])
+        for msg in messages:
+            if msg["is_tool_exchange"]:
+                vbox.addWidget(ToolExchangeSep())
+            else:
+                vbox.addWidget(MessageBubble(msg))
+
+        if not messages:
+            empty = QLabel("No messages found.")
+            empty.setObjectName("EmptyLabel")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            vbox.addWidget(empty)
 
         vbox.addStretch()
         scroll.setWidget(container)
