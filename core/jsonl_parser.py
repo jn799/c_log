@@ -105,6 +105,7 @@ def parse_session_metadata(path: str) -> dict | None:
     uuid = os.path.splitext(os.path.basename(path))[0]
     title = ""
     custom_title = ""
+    ai_title = ""
     first_ts = last_ts = ""
     model = version = cwd = ""
     msg_count = 0
@@ -155,6 +156,9 @@ def parse_session_metadata(path: str) -> dict | None:
             elif t == "custom-title":
                 custom_title = ev.get("customTitle", "")
 
+            elif t == "ai-title":
+                ai_title = ev.get("aiTitle", "")
+
     except OSError:
         return None
 
@@ -166,6 +170,7 @@ def parse_session_metadata(path: str) -> dict | None:
         "path": path,
         "title": title or f"Session {uuid[:8]}",
         "custom_title": custom_title,
+        "ai_title": ai_title,
         "first_ts": first_ts,
         "last_ts": last_ts,
         "date": _fmt_ts(last_ts or first_ts),

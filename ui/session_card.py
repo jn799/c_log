@@ -13,6 +13,8 @@ def _resolve_title(meta: dict) -> str:
     cached = config.get_cached_title(meta["uuid"])
     if cached:
         return cached
+    if meta.get("ai_title"):
+        return meta["ai_title"]
     if meta.get("custom_title"):
         return meta["custom_title"]
     return meta.get("title", meta["uuid"][:8])
