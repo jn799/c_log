@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QStackedWidget, QToolButton, QMenu, QMessageBox
+    QStackedWidget, QToolButton, QMenu, QMessageBox, QApplication
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeyEvent
@@ -96,6 +96,7 @@ class SessionCard(QFrame):
         self._menu.addAction("Update").triggered.connect(self._do_update)
         self._pin_action = self._menu.addAction("Unpin" if self._pinned else "Pin")
         self._pin_action.triggered.connect(self._toggle_pin)
+        self._menu.addAction("Copy Session ID").triggered.connect(self._copy_session_id)
         self._menu_btn.setMenu(self._menu)
         title_row.addWidget(self._menu_btn)
 
@@ -205,10 +206,17 @@ class SessionCard(QFrame):
         self.style().polish(self)
         self.pin_changed.emit()
 
+    # ── Copy Session ID ───────────────────────────────────────────────────────
+
+    def _copy_session_id(self):
+        QApplication.clipboard().setText(self.session_meta["uuid"])
+
     # ── Events ────────────────────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and not self._editing:
+        if event.button() == Qt.MouseButton.RightButton:
+            self._menu.exec(event.globalPosition().toPoint())
+        elif event.button() == Qt.MouseButton.LeftButton and not self._editing:
             self.clicked.emit(self.session_meta)
         super().mousePressEvent(event)
 
