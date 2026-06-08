@@ -7,5 +7,5 @@ Exec=python3 /home/hplaptopjoseph/claude_log/main.py
 Icon=claude_log
 Terminal=false
 Categories=Utility;Development;
-StartupNotify=true
+StartupNotify=false
 StartupWMClass=claude_log
