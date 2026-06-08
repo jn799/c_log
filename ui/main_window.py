@@ -95,7 +95,7 @@ class MainWindow(QMainWindow):
         proj_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._proj_container = ProjectsContainer()
-        self._proj_container.reordered.connect(self._on_projects_reordered)
+        self._proj_container.reordered.connect(self._on_pinned_projects_reordered)
         proj_scroll.setWidget(self._proj_container)
         sidebar_lay.addWidget(proj_scroll)
 
@@ -205,15 +205,62 @@ class MainWindow(QMainWindow):
             self._session_cards.append(card)
         self._sessions_lay.addStretch()
 
+    def _rebuild_project_layout(self):
+        """Re-sort and re-layout project cards: pinned in saved order, unpinned by recency."""
+        pinned_paths = config.load_pinned_projects()
+        pinned_set = set(pinned_paths)
+
+        pinned_cards = []
+        for path in pinned_paths:
+            card = next((c for c in self._project_cards if c.project_path == path), None)
+            if card:
+                pinned_cards.append(card)
+
+        unpinned_cards = sorted(
+            [c for c in self._project_cards if c.project_path not in pinned_set],
+            key=lambda c: c.last_session_ts or "",
+            reverse=True,
+        )
+
+        self._proj_container.rebuild(pinned_cards, unpinned_cards)
+
     # ── Project management ─────────────────────────────────────────────────────
 
     def _load_persisted_projects(self):
+        pinned_paths = config.load_pinned_projects()
+        pinned_set = set(pinned_paths)
+
+        all_data = []
         for proj in config.load_projects():
             path = proj["path"]
-            name = proj["display_name"]
-            last = proj.get("last_accessed", "")
-            if os.path.isdir(path):
-                self._add_project_card(path, name, last)
+            if not os.path.isdir(path):
+                continue
+            sessions = jsonl_parser.scan_project(path)
+            last_ts = sessions[0]["date_sort"] if sessions else ""
+            all_data.append({
+                "path": path,
+                "name": proj["display_name"],
+                "sessions": sessions,
+                "last_session_ts": last_ts,
+                "pinned": path in pinned_set,
+            })
+
+        pinned_data = [
+            d for path in pinned_paths
+            for d in all_data if d["path"] == path
+        ]
+        unpinned_data = sorted(
+            [d for d in all_data if not d["pinned"]],
+            key=lambda d: d["last_session_ts"] or "",
+            reverse=True,
+        )
+
+        for d in pinned_data + unpinned_data:
+            self._add_project_card(
+                d["path"], d["name"], d["last_session_ts"], d["pinned"], len(d["sessions"])
+            )
+
+        self._rebuild_project_layout()
 
     def _import_project(self):
         dlg = ImportDialog(self)
@@ -225,16 +272,24 @@ class MainWindow(QMainWindow):
         display_name = jsonl_parser.get_project_display_name(path)
         config.add_project(path, display_name)
         self._add_project_card(path, display_name)
+        self._rebuild_project_layout()
 
-    def _add_project_card(self, path: str, display_name: str, last_accessed: str = ""):
+    def _add_project_card(self, path: str, display_name: str,
+                          last_session_ts: str = "", pinned: bool = False,
+                          session_count: int | None = None):
         for card in self._project_cards:
             if card.project_path == path:
                 return
-        sessions = jsonl_parser.scan_project(path)
-        card = ProjectCard(display_name, len(sessions), path, last_accessed)
+        if session_count is None:
+            sessions = jsonl_parser.scan_project(path)
+            session_count = len(sessions)
+            if not last_session_ts and sessions:
+                last_session_ts = sessions[0]["date_sort"]
+        card = ProjectCard(display_name, session_count, path, last_session_ts, pinned)
         card.clicked.connect(self._select_project)
         card.remove_requested.connect(self._remove_project)
-        self._proj_container.add_card(card)
+        card.pin_changed.connect(self._on_project_pin_changed)
+        card.update_requested.connect(self._on_project_update_requested)
         self._project_cards.append(card)
         if self._active_path is None:
             self._select_project(path)
@@ -243,13 +298,6 @@ class MainWindow(QMainWindow):
         self._active_path = path
         for card in self._project_cards:
             card.set_active(card.project_path == path)
-
-        config.set_last_accessed(path)
-        ts = config.get_last_accessed(path)
-        for card in self._project_cards:
-            if card.project_path == path:
-                card.update_last_accessed(ts)
-                break
 
         sessions = jsonl_parser.scan_project(path)
         pinned_uuids = config.load_pinned()
@@ -274,13 +322,13 @@ class MainWindow(QMainWindow):
 
         config.clear_project_titles(path)
         config.remove_project(path)
+        config.unpin_project(path)
 
-        for card in self._project_cards:
-            if card.project_path == path:
-                self._proj_container.remove_card(card)
-                card.deleteLater()
-                self._project_cards.remove(card)
-                break
+        card = next((c for c in self._project_cards if c.project_path == path), None)
+        if card:
+            self._project_cards.remove(card)
+            self._proj_container.remove_card(card)
+            card.deleteLater()
 
         if self._active_path == path:
             self._active_path = None
@@ -290,11 +338,43 @@ class MainWindow(QMainWindow):
             if self._project_cards:
                 self._select_project(self._project_cards[0].project_path)
 
-    def _on_projects_reordered(self, paths: list):
-        projects = config.load_projects()
-        by_path = {p["path"]: p for p in projects}
-        config.save_projects([by_path[p] for p in paths if p in by_path])
-        self._project_cards = [c for p in paths for c in self._project_cards if c.project_path == p]
+    def _on_pinned_projects_reordered(self, paths: list):
+        config.save_pinned_projects(paths)
+
+    def _on_project_pin_changed(self, path: str, pinned: bool):
+        if pinned:
+            config.pin_project(path)
+        else:
+            config.unpin_project(path)
+        self._rebuild_project_layout()
+
+    def _on_project_update_requested(self, path: str):
+        sessions = jsonl_parser.scan_project(path)
+        new_count = len(sessions)
+        new_ts = sessions[0]["date_sort"] if sessions else ""
+
+        card = next((c for c in self._project_cards if c.project_path == path), None)
+        if card is None:
+            return
+
+        old_count = card._session_count
+        card.update_count(new_count)
+        card.update_last_session_ts(new_ts)
+
+        if path == self._active_path:
+            self._select_project(path)
+
+        self._rebuild_project_layout()
+
+        if new_count != old_count:
+            diff = new_count - old_count
+            ReportDialog.show(
+                "Update",
+                f"Sessions: {old_count} → {new_count} ({'+' if diff > 0 else ''}{diff})",
+                self,
+            )
+        else:
+            ReportDialog.show("Update", "Already up-to-date!", self)
 
     # ── Refresh / update ───────────────────────────────────────────────────────
 
@@ -322,6 +402,14 @@ class MainWindow(QMainWindow):
             )
         )
 
+        # Also update the active project card's last_session_ts
+        sessions = jsonl_parser.scan_project(self._active_path)
+        new_ts = sessions[0]["date_sort"] if sessions else ""
+        card = next((c for c in self._project_cards if c.project_path == self._active_path), None)
+        if card:
+            card.update_last_session_ts(new_ts)
+        self._rebuild_project_layout()
+
         changes = []
         if new_count != old_count:
             diff = new_count - old_count
@@ -341,15 +429,18 @@ class MainWindow(QMainWindow):
     def _update_all(self):
         proj_changes = []
         for card in self._project_cards:
-            old = card._session_count
             sessions = jsonl_parser.scan_project(card.project_path)
-            new = len(sessions)
-            card.update_count(new)
-            if new != old:
-                diff = new - old
+            new_count = len(sessions)
+            new_ts = sessions[0]["date_sort"] if sessions else ""
+            old_count = card._session_count
+            card.update_count(new_count)
+            card.update_last_session_ts(new_ts)
+            if new_count != old_count:
+                diff = new_count - old_count
                 proj_changes.append(
-                    f"{card.project_name}:  {old}  →  {new} sessions  ({'+' if diff>0 else ''}{diff})"
+                    f"{card.project_name}:  {old_count}  →  {new_count} sessions  ({'+' if diff>0 else ''}{diff})"
                 )
+        self._rebuild_project_layout()
         if self._active_path:
             self._select_project(self._active_path)
         if proj_changes:

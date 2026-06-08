@@ -122,6 +122,39 @@ def is_pinned(uuid: str) -> bool:
     return uuid in load_pinned()
 
 
+_PINNED_PROJECTS_FILE = os.path.join(_CONFIG_DIR, "pinned_projects.json")
+
+
+def load_pinned_projects() -> list[str]:
+    """Return ordered list of pinned project paths."""
+    try:
+        with open(_PINNED_PROJECTS_FILE) as f:
+            return json.load(f).get("pinned_projects", [])
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_pinned_projects(paths: list[str]) -> None:
+    _ensure_dir()
+    with open(_PINNED_PROJECTS_FILE, "w") as f:
+        json.dump({"pinned_projects": paths}, f, indent=2)
+
+
+def pin_project(path: str) -> None:
+    paths = load_pinned_projects()
+    if path not in paths:
+        paths.append(path)
+        save_pinned_projects(paths)
+
+
+def unpin_project(path: str) -> None:
+    save_pinned_projects([p for p in load_pinned_projects() if p != path])
+
+
+def is_project_pinned(path: str) -> bool:
+    return path in load_pinned_projects()
+
+
 def clear_project_titles(project_path: str) -> None:
     """Remove all cached titles for sessions in the given project directory."""
     titles = load_titles()

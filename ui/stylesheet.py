@@ -143,23 +143,23 @@ QFrame#SessionCard[pinned="true"] {
     border: 1px solid #1a2535;
     border-left: 2px solid #2a6080;
 }
+
+/* ── Pinned project card ── */
+QFrame#ProjectCard[pinned="true"] {
+    background: #161210;
+    border-left: 2px solid #7a5535;
+}
+QFrame#ProjectCard[pinned="true"][active="true"] {
+    background: #1e1a15;
+    border-left: 2px solid #c8915a;
+}
+
 QLabel#PinIcon {
     color: #3a8090;
     font-size: 12px;
 }
-
-/* ── Trash button on project cards ── */
-QPushButton#TrashBtn {
-    background: transparent;
-    border: none;
-    color: #333333;
-    font-size: 13px;
-    border-radius: 3px;
-    padding: 0;
-}
-QPushButton#TrashBtn:hover {
-    background: #2a1010;
-    color: #cc4444;
+QFrame#ProjectCard QLabel#PinIcon {
+    color: #7a5535;
 }
 
 /* ── Refresh buttons ── */

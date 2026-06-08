@@ -1,4 +1,7 @@
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QApplication
+from PyQt6.QtWidgets import (
+    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QApplication,
+    QToolButton, QMenu
+)
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData
 from PyQt6.QtGui import QDrag
 
@@ -40,15 +43,20 @@ class _DragHandle(QLabel):
 class ProjectCard(QFrame):
     clicked = pyqtSignal(str)
     remove_requested = pyqtSignal(str)
+    pin_changed = pyqtSignal(str, bool)   # (path, new_pinned_state)
+    update_requested = pyqtSignal(str)    # path
 
     def __init__(self, name: str, session_count: int, path: str,
-                 last_accessed: str = "", parent=None):
+                 last_session_ts: str = "", pinned: bool = False, parent=None):
         super().__init__(parent)
         self.project_name = name
         self.project_path = path
+        self.last_session_ts = last_session_ts
         self._session_count = session_count
+        self._pinned = pinned
         self.setObjectName("ProjectCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setProperty("pinned", "true" if pinned else "false")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 4, 0, 4)
@@ -60,6 +68,12 @@ class ProjectCard(QFrame):
         row.setSpacing(6)
 
         self._drag_handle = _DragHandle(self)
+        self._drag_handle.setVisible(pinned)
+
+        self._pin_icon = QLabel("⊛")
+        self._pin_icon.setObjectName("PinIcon")
+        self._pin_icon.setVisible(pinned)
+
         arrow = QLabel("▶")
         arrow.setObjectName("ProjectArrow")
 
@@ -69,27 +83,39 @@ class ProjectCard(QFrame):
         self._count_lbl = QLabel(str(session_count))
         self._count_lbl.setObjectName("ProjectCount")
 
-        trash_btn = QPushButton("🗑")
-        trash_btn.setObjectName("TrashBtn")
-        trash_btn.setFixedSize(22, 22)
-        trash_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        trash_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        trash_btn.setToolTip("Remove project from view")
-        trash_btn.clicked.connect(lambda: self.remove_requested.emit(self.project_path))
+        self._menu_btn = QToolButton()
+        self._menu_btn.setText("⋯")
+        self._menu_btn.setObjectName("CardMenuBtn")
+        self._menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._menu_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        self._menu = QMenu(self._menu_btn)
+        self._menu.setObjectName("CardMenu")
+        self._pin_action = self._menu.addAction("Unpin" if pinned else "Pin")
+        self._pin_action.triggered.connect(self._toggle_pin)
+        self._menu.addAction("Update").triggered.connect(
+            lambda: self.update_requested.emit(self.project_path)
+        )
+        self._menu.addSeparator()
+        self._menu.addAction("Remove").triggered.connect(
+            lambda: self.remove_requested.emit(self.project_path)
+        )
+        self._menu_btn.setMenu(self._menu)
 
         row.addWidget(self._drag_handle)
+        row.addWidget(self._pin_icon)
         row.addWidget(arrow)
         row.addWidget(name_lbl, 1)
         row.addWidget(self._count_lbl)
-        row.addWidget(trash_btn)
+        row.addWidget(self._menu_btn)
         outer.addLayout(row)
 
-        # ── Last-accessed row ──
-        self._last_lbl = QLabel(self._fmt_last(last_accessed))
+        # ── Last session row ──
+        self._last_lbl = QLabel(self._fmt_last(last_session_ts))
         self._last_lbl.setObjectName("ProjectLastAccessed")
-        self._last_lbl.setContentsMargins(38, 0, 8, 0)   # indent to align under name
-        if not last_accessed:
-            self._last_lbl.hide()
+        self._last_lbl.setContentsMargins(38, 0, 8, 0)
+        self._last_lbl.setVisible(bool(last_session_ts))
         outer.addWidget(self._last_lbl)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -116,15 +142,34 @@ class ProjectCard(QFrame):
         self._session_count = session_count
         self._count_lbl.setText(str(session_count))
 
-    def update_last_accessed(self, ts: str):
+    def update_last_session_ts(self, ts: str):
+        self.last_session_ts = ts
         text = self._fmt_last(ts)
         self._last_lbl.setText(text)
         self._last_lbl.setVisible(bool(text))
 
+    def set_pinned(self, pinned: bool):
+        self._pinned = pinned
+        self._drag_handle.setVisible(pinned)
+        self._pin_icon.setVisible(pinned)
+        self._pin_action.setText("Unpin" if pinned else "Pin")
+        self.setProperty("pinned", "true" if pinned else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    # ── Toggle pin ────────────────────────────────────────────────────────────
+
+    def _toggle_pin(self):
+        new_pinned = not self._pinned
+        self.set_pinned(new_pinned)
+        self.pin_changed.emit(self.project_path, new_pinned)
+
     # ── Events ────────────────────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.RightButton:
+            self._menu.exec(event.globalPosition().toPoint())
+        elif event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.project_path)
         super().mousePressEvent(event)
 
